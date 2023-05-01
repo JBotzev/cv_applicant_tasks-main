@@ -34,60 +34,41 @@ b_torch = grouped_layer.bias
 y = grouped_layer(x)
 
 # now write your custom layer
-class CustomGroupedConv2D(nn.Module):
-    def __init__(self):
-        pass
+class CustomGroupedConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=1, groups=16, bias=True):
+        super().__init__()
+
+        # Create a stack of 2D convolutions with groups=1
+        self.conv_stack = nn.ModuleList()
+        for _ in range(groups):
+            self.conv_stack.append(nn.Conv2d(in_channels//groups, out_channels//groups, kernel_size, stride, padding, groups=1, bias=bias))
 
     def forward(self, x):
-        pass
+        # Split the input tensor across the channel dimension
+        x_split = torch.split(x, x.shape[1]//len(self.conv_stack), dim=1)
+        out_list = []
+        # Forward pass for each conv layer in the stack
+        for i in range(len(self.conv_stack)):
+            out_list.append(self.conv_stack[i](x_split[i]))
+        # Concatenate the output tensors along the channel dimension
+        out = torch.cat(out_list, dim=1)
+        return out
 
-# the output of CustomGroupedConv2D(x) must be equal to grouped_layer(x)
+# Create an instance of the custom layer
+grouped_layer_custom = CustomGroupedConv2d(64, 128, 3, stride=1, padding=1, groups=16, bias=True)
 
-class GroupedConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):
-        super(GroupedConv2d, self).__init__()
+# Initialize the weights with Xavier uniform and biases with zeros
+for conv_layer in grouped_layer_custom.conv_stack:
+    nn.init.xavier_uniform_(conv_layer.weight)
+    nn.init.zeros_(conv_layer.bias)
 
-        # Calculate number of channels per group
-        self.groups = groups
-        self.in_channels_per_group = in_channels // groups
-        self.out_channels_per_group = out_channels // groups
+# Forward pass
+y_custom = grouped_layer_custom(x)
+print('original: ')
+print(y)
 
-        # Create stack of 2D convolution layers
-        self.convs = nn.ModuleList()
-        for i in range(groups):
-            self.convs.append(nn.Conv2d(
-                self.in_channels_per_group,
-                self.out_channels_per_group,
-                kernel_size,
-                stride=stride,
-                padding=padding,
-                dilation=dilation,
-                groups=1,
-                bias=bias
-            ))
+print('custom: ')
+print(y_custom)
 
-    def forward(self, x):
-        # Split input tensor along the channel dimension
-        x_groups = torch.split(x, self.in_channels_per_group, dim=1)
-
-        # Apply each 2D convolution layer to its corresponding group
-        conv_results = []
-        for i in range(self.groups):
-            conv_results.append(self.convs[i](x_groups[i]))
-
-        # Concatenate the results along the channel dimension and return
-        return torch.cat(conv_results, dim=1)
-
-    def _initialize_weights(self):
-        # Initialize weights of each 2D convolution layer in the stack
-        for conv in self.convs:
-            nn.init.kaiming_uniform_(conv.weight, a=math.sqrt(5))
-            if conv.bias is not None:
-                fan_in, _ = nn.init._calculate_fan_in_and_fan_out(conv.weight)
-                bound = 1 / math.sqrt(fan_in)
-                nn.init.uniform_(conv.bias, -bound, bound)
-
-
-
-
-        
+# Check if the outputs are equal
+print(torch.allclose(y, y_custom))
